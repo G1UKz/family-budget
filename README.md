@@ -27,8 +27,8 @@ Self-hosted сервис семейного бюджета: импорт бан�
    ├─ cert-manager ── Let's Encrypt ── Traefik Ingress ── family-budget (FastAPI + React SPA)
    ├─ CloudNativePG ── Postgres 17 ◄──────────────────────┘
    ├─ Vault (raft) ──► External Secrets ──► k8s Secrets (app key, Anthropic key, restic creds)
-   ├─ VictoriaMetrics stack (vmagent, vmsingle, vmalert, alertmanager, grafana)
-   └─ CronJobs: pg_dump → restic (S3, off-site) · weekly restore-check · Vault raft snapshot → restic
+   ├─ VictoriaMetrics stack (vmagent, vmsingle, vmalert, alertmanager, grafana)   [prod, выключен в профиле «для дома»]
+   └─ CronJobs: pg_dump → restic (S3, off-site) · weekly restore-check · Vault raft snapshot → restic   [включаются вместе с S3]
 ```
 
 | Слой | Технологии |
@@ -37,7 +37,7 @@ Self-hosted сервис семейного бюджета: импорт бан�
 | Frontend | React 18, TypeScript, Vite, Recharts |
 | Данные | PostgreSQL 17 (CloudNativePG) |
 | Платформа | k3s, Argo CD, Helm, cert-manager, Traefik, Vault + External Secrets Operator |
-| Наблюдаемость | Prometheus-метрики приложения, VictoriaMetrics, Grafana, PrometheusRule-алерты |
+| Наблюдаемость | Пробы, metrics-server, Prometheus-метрики приложения; для продакшна — VictoriaMetrics, Grafana, PrometheusRule-алерты (готово, включается одним коммитом) |
 | Инфраструктура как код | Ansible (hardening VDS, k3s), Helm-чарт, Argo CD Applications |
 
 Структура репозитория:
@@ -66,6 +66,8 @@ docker compose up --build -d
 docker compose exec app budget create-user ivan --display-name Иван   # покажет otpauth:// для приложения-аутентификатора
 open http://localhost:8000
 ```
+
+Контейнеры перезапускаются сами (`restart: unless-stopped`), если Docker запускается при входе в систему. Выписку с хоста можно загрузить через интерфейс («Выписки») или командой `scripts/import.sh statement.pdf`: повторная загрузка той же выписки отклоняется.
 
 Разработка без Docker: `python -m venv .venv && .venv/bin/pip install -e "backend[dev]"`, `cd backend && ../.venv/bin/pytest`, фронт — `cd frontend && npm i && npm run dev` (проксирует `/api` на :8000).
 

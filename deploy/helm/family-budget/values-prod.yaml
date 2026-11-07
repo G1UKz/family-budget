@@ -2,6 +2,11 @@
 image:
   tag: sha-456e018
 backup:
+  enabled: false   # true once the S3 bucket and kv/family-budget/backup exist (docs/operations.md)
   image: ghcr.io/g1ukz/family-budget-backup:sha-456e018
 ingress:
   host: budget.example.com   # TODO: real domain, A-record -> VDS IP
+
+# Home-use profile (4 GB node). Production switches, see docs/operations.md:
+metrics:
+  serviceMonitor: false   # true together with deploy/argocd/apps/monitoring.yaml

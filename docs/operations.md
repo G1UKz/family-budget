@@ -2,9 +2,9 @@
 
 ## 0. Что нужно заранее
 
-- VDS: 4 vCPU / 8 ГБ RAM / 80 ГБ NVMe, Ubuntu 24.04, доступ root по SSH-ключу.
+- VDS: 2 vCPU / 4 ГБ RAM / 80 ГБ NVMe, Ubuntu 24.04, доступ root по SSH-ключу — профиль «для дома» (полный мониторинг выключен). С полным мониторингом и запасом — 4 vCPU / 8 ГБ.
 - Домен/поддомен с A-записью на IP сервера (для Let's Encrypt).
-- S3-совместимое хранилище **вне** VDS для restic (например, Yandex Object Storage / Backblaze B2): бакет + ключи.
+- S3-совместимое хранилище **вне** VDS для restic (например, Yandex Object Storage / Backblaze B2): бакет + ключи. Можно позже: без него бэкапы выключены (`backup.enabled: false`), а `bootstrap.sh` пропускает секрет бэкапов при пустом ответе.
 - Ключ Anthropic API (необязательно).
 - Менеджер паролей для unseal-ключей Vault и пароля restic.
 
@@ -50,6 +50,8 @@ kubectl -n budget exec -it deploy/family-budget -- budget create-user partner --
 
 ## 4. Бэкапы
 
+> Сейчас выключены: нет S3. Включение: бакет → `deploy/vault/bootstrap.sh` (ответить про S3) → `backup.enabled: true` в `values-prod.yaml` → раскомментировать `deploy/platform/vault-snapshot.yaml` → push. До этого данные живут только на диске VDS.
+
 | Что | Как | Когда |
 |---|---|---|
 | Postgres | `pg_dump -Fc` → restic (тег `<release>`), retention 7d/5w/12m, `restic check` 5% | ежедневно 03:15 |
@@ -80,7 +82,18 @@ kubectl -n budget scale deploy/family-budget --replicas=1
 
 ## 5. Мониторинг
 
-`kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80`. Метрики приложения — `/metrics` (http_requests_total, латентность), CNPG PodMonitor, kube-state-metrics для CronJob'ов. Argo CD UI: `kubectl -n argocd port-forward svc/argo-cd-argocd-server 8080:80`.
+**Сейчас (профиль «для дома», 4 ГБ):**
+- liveness/readiness-пробы приложения (`/healthz`, `/readyz`) — k8s сам перезапускает зависший под;
+- `kubectl top nodes|pods` — встроенный в k3s metrics-server;
+- статус синхронизации и здоровья приложений в Argo CD: `kubectl -n argocd get applications` или UI через `kubectl -n argocd port-forward svc/argo-cd-argocd-server 8080:80`;
+- метрики приложения `/metrics` (http_requests_total, латентность) отдаются всегда, их просто никто не собирает.
+
+**Продакшн (готово, закомментировано):** VictoriaMetrics + vmalert + Alertmanager + Grafana (~0,8–1 ГБ RAM), ServiceMonitor приложения, CNPG PodMonitor, алерты `BudgetHighErrorRate`, `BudgetBackupFailed`, `BudgetBackupMissing`. Включение:
+1. раскомментировать `deploy/argocd/apps/monitoring.yaml`;
+2. `metrics.serviceMonitor: true` в `deploy/helm/family-budget/values-prod.yaml`;
+3. push в main — Argo CD поднимет стек. Grafana: `kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80`.
+
+CRD Prometheus Operator ставятся всегда (`prometheus-operator-crds`, без подов), поэтому включение не требует ручных шагов.
 
 ## 6. Рост до нескольких узлов
 

@@ -42,7 +42,9 @@ if ! v kv get kv/family-budget/app >/dev/null 2>&1; then
   v kv put kv/family-budget/app secret_key="$(openssl rand -hex 32)" anthropic_api_key="$AKEY" home_city_regex="${HCITY:-(?i)hometown}" >/dev/null
 fi
 if ! v kv get kv/family-budget/backup >/dev/null 2>&1; then
-  read -rp "restic repository (e.g. s3:https://storage.yandexcloud.net/bucket/budget): " REPO
+  read -rp "restic repository (e.g. s3:https://storage.yandexcloud.net/bucket/budget; empty = skip backups for now): " REPO
+fi
+if [ -n "${REPO:-}" ]; then
   read -rp "S3 access key id: " AK
   read -rsp "S3 secret key: " SK; echo
   RP=$(openssl rand -base64 32)
