@@ -7,7 +7,10 @@ if echo "$files" | grep -E '\.pdf$' | grep -v '^backend/tests/fixtures/vtb_synth
   echo "::error::PDF files other than the synthetic fixture are tracked"; bad=1; fi
 if echo "$files" | grep -E '(^|/)(journal|rules|overrides|trips)\.csv$|\.dump$|(^|/)\.env$|kubeconfig|vault-init\.json'; then
   echo "::error::private data file is tracked"; bad=1; fi
-# 20-digit Russian account numbers and 16-digit card numbers
-if git grep -nIE '\b(408|423|302)[0-9]{17}\b|\b[2-6][0-9]{15}\b' -- ':!*.lock' ':!*package-lock.json'; then
+# 20-digit Russian account numbers and 16-digit card numbers.
+# -w instead of \b: portable between GNU and BSD grep. Synthetic fixtures use
+# 408178100000000XXXXX (all-zero middle) and are allowed.
+if git grep -nIwE '(408|423|302)[0-9]{17}|[2-6][0-9]{15}' -- ':!*.lock' ':!*package-lock.json' \
+    | grep -vE '408178100000000[0-9]{5}'; then
   echo "::error::account/card-like number found"; bad=1; fi
 exit $bad
