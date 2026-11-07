@@ -1,9 +1,9 @@
 # Production overrides. Image tags are bumped by CI on every merge to main (GitOps).
 image:
-  tag: sha-4a3b0d9
+  tag: sha-f47deeb
 backup:
   enabled: false   # true once the S3 bucket and kv/family-budget/backup exist (docs/operations.md)
-  image: ghcr.io/g1ukz/family-budget-backup:sha-4a3b0d9
+  image: ghcr.io/g1ukz/family-budget-backup:sha-f47deeb
 ingress:
   host: budget.91.84.104.37.sslip.io   # temporary: sslip.io resolves to the VDS IP; replace with own domain
 
