@@ -1,0 +1,20 @@
+{{- if .Values.postgres.cnpg.enabled }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "fb.name" . }}-db
+  labels: {{- include "fb.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.postgres.cnpg.instances }}
+  imageName: {{ .Values.postgres.cnpg.image }}
+  bootstrap:
+    initdb: {database: budget, owner: budget}
+  storage:
+    size: {{ .Values.postgres.cnpg.storage }}
+    storageClass: {{ .Values.postgres.cnpg.storageClass }}
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 512Mi}
+  monitoring:
+    enablePodMonitor: {{ .Values.metrics.serviceMonitor }}
+{{- end }}

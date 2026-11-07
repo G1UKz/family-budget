@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: family-budget
+  namespace: argocd
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+spec:
+  project: default
+  destination: {server: https://kubernetes.default.svc, namespace: budget}
+  source:
+    repoURL: https://github.com/G1UKz/family-budget.git
+    targetRevision: main
+    path: deploy/helm/family-budget
+    helm: {valueFiles: [values.yaml, values-prod.yaml]}
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    syncOptions: [CreateNamespace=true]
+    retry: {limit: 10, backoff: {duration: 30s, maxDuration: 5m}}

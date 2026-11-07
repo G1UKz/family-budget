@@ -1,0 +1,118 @@
+# Bootstrap a VDS into a single-node k3s cluster managed by Argo CD.
+#   ansible-playbook site.yml            (first run: -e ansible_user=root)
+- name: Base OS hardening
+  hosts: all
+  become: true
+  tasks:
+    - name: Packages
+      ansible.builtin.apt:
+        name: [ufw, fail2ban, unattended-upgrades, curl, ca-certificates, nfs-common, open-iscsi]
+        update_cache: true
+        upgrade: safe
+    - name: Unattended security upgrades
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+        mode: "0644"
+    - name: Admin user
+      ansible.builtin.user: {name: "{{ admin_user }}", groups: sudo, append: true, shell: /bin/bash}
+    - name: Admin SSH key
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "{{ lookup('file', admin_pubkey_file) }}"
+    - name: Passwordless sudo for admin (key-only login)
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/90-admin
+        content: "{{ admin_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        mode: "0440"
+        validate: visudo -cf %s
+    - name: SSH hardening
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/10-hardening.conf
+        content: |
+          Port {{ ssh_port }}
+          PermitRootLogin no
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          AllowUsers {{ admin_user }}
+          MaxAuthTries 3
+        mode: "0644"
+        validate: sshd -t -f %s
+      notify: Restart ssh
+    - name: Fail2ban for sshd
+      ansible.builtin.copy:
+        dest: /etc/fail2ban/jail.d/sshd.local
+        content: |
+          [sshd]
+          enabled = true
+          port = {{ ssh_port }}
+          maxretry = 5
+          bantime = 1h
+        mode: "0644"
+      notify: Restart fail2ban
+    - name: Kernel settings for Kubernetes
+      ansible.posix.sysctl: {name: "{{ item.k }}", value: "{{ item.v }}", sysctl_file: /etc/sysctl.d/90-k8s.conf}
+      loop:
+        - {k: net.ipv4.ip_forward, v: "1"}
+        - {k: fs.inotify.max_user_instances, v: "512"}
+        - {k: vm.swappiness, v: "10"}
+    - name: Firewall defaults
+      community.general.ufw: {state: enabled, policy: deny, direction: incoming}
+    - name: Public HTTP(S)
+      community.general.ufw: {rule: allow, port: "{{ item }}", proto: tcp}
+      loop: ["80", "443"]
+    - name: SSH and kube API from admin networks
+      community.general.ufw: {rule: allow, port: "{{ item.1 }}", proto: tcp, src: "{{ item.0 }}"}
+      loop: "{{ admin_cidrs | product([ssh_port | string, '6443']) | list }}"
+    - name: Pod and service networks
+      community.general.ufw: {rule: allow, src: "{{ item }}"}
+      loop: ["10.42.0.0/16", "10.43.0.0/16"]
+  handlers:
+    - name: Restart ssh
+      ansible.builtin.service: {name: ssh, state: restarted}
+    - name: Restart fail2ban
+      ansible.builtin.service: {name: fail2ban, state: restarted}
+
+- name: K3s server
+  hosts: k3s_server
+  become: true
+  tasks:
+    - name: K3s config
+      ansible.builtin.template: {src: templates/k3s-server.yaml.j2, dest: /etc/rancher/k3s/config.yaml, mode: "0600"}
+      notify: Restart k3s
+    - name: K3s installer
+      ansible.builtin.get_url: {url: https://get.k3s.io, dest: /usr/local/bin/k3s-install.sh, mode: "0700"}
+    - name: Install k3s {{ k3s_version }}
+      ansible.builtin.command: /usr/local/bin/k3s-install.sh server
+      environment: {INSTALL_K3S_VERSION: "{{ k3s_version }}"}
+      args: {creates: /usr/local/bin/k3s}
+    - name: Argo CD + root app (k3s auto-applies manifests from this directory)
+      ansible.builtin.template:
+        src: templates/argocd.yaml.j2
+        dest: /var/lib/rancher/k3s/server/manifests/argocd.yaml
+        mode: "0600"
+    - name: Read join token
+      ansible.builtin.slurp: {src: /var/lib/rancher/k3s/server/node-token}
+      register: k3s_token
+    - name: Fetch kubeconfig
+      ansible.builtin.fetch: {src: /etc/rancher/k3s/k3s.yaml, dest: "./kubeconfig-{{ inventory_hostname }}", flat: true}
+  handlers:
+    - name: Restart k3s
+      ansible.builtin.service: {name: k3s, state: restarted}
+
+- name: K3s agents (future nodes)
+  hosts: k3s_agents
+  become: true
+  tasks:
+    - name: K3s installer
+      ansible.builtin.get_url: {url: https://get.k3s.io, dest: /usr/local/bin/k3s-install.sh, mode: "0700"}
+    - name: Install k3s agent
+      ansible.builtin.command: /usr/local/bin/k3s-install.sh agent
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        K3S_URL: "https://{{ hostvars[groups['k3s_server'][0]].ansible_host }}:6443"
+        K3S_TOKEN: "{{ hostvars[groups['k3s_server'][0]].k3s_token.content | b64decode | trim }}"
+      args: {creates: /usr/local/bin/k3s}
+      no_log: true

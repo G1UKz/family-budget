@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+spec:
+  project: default
+  destination: {server: https://kubernetes.default.svc, namespace: monitoring}
+  source:
+    repoURL: https://victoriametrics.github.io/helm-charts
+    chart: victoria-metrics-k8s-stack
+    targetRevision: 0.97.1
+    helm:
+      valuesObject:
+        # Small single-node footprint: VMSingle + VMAgent + VMAlert + Alertmanager + Grafana
+        vmsingle:
+          spec:
+            retentionPeriod: 30d
+            storage: {resources: {requests: {storage: 10Gi}}}
+            resources: {requests: {cpu: 50m, memory: 256Mi}, limits: {memory: 512Mi}}
+        victoria-metrics-operator:
+          operator: {prometheus_converter_add_argocd_ignore_annotations: true}
+        alertmanager:
+          spec: {resources: {requests: {cpu: 10m, memory: 32Mi}}}
+          # receivers (Telegram bot) are configured from Vault, see docs/operations.md
+        grafana:
+          ingress: {enabled: false}   # kubectl port-forward svc/monitoring-grafana 3000:80
+          resources: {requests: {cpu: 20m, memory: 128Mi}}
+        kube-state-metrics: {resources: {requests: {cpu: 10m, memory: 48Mi}}}
+        prometheus-node-exporter: {resources: {requests: {cpu: 10m, memory: 24Mi}}}
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

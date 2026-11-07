@@ -1,0 +1,59 @@
+image:
+  repository: ghcr.io/g1ukz/family-budget
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+ingress:
+  enabled: true
+  className: traefik
+  host: budget.example.com
+  clusterIssuer: letsencrypt
+  tls: true
+
+app:
+  env: prod
+  startDate: "2026-06-01"
+  llmModel: claude-opus-5-5
+  resources:
+    requests: {cpu: 50m, memory: 160Mi}
+    limits: {memory: 384Mi}
+
+# Secret with BUDGET_SECRET_KEY and BUDGET_ANTHROPIC_API_KEY.
+# With externalSecrets.enabled it is materialized from Vault by External Secrets Operator.
+secretName: family-budget
+
+externalSecrets:
+  enabled: true
+  storeName: vault
+  refreshInterval: 1h
+  appPath: family-budget/app        # kv/data/family-budget/app {secret_key, anthropic_api_key}
+  backupPath: family-budget/backup  # kv/data/family-budget/backup {restic_repository, restic_password, aws_access_key_id, aws_secret_access_key}
+
+postgres:
+  cnpg:
+    enabled: true
+    instances: 1          # 2+ when the cluster grows to several nodes
+    storage: 5Gi
+    storageClass: local-path
+    image: ghcr.io/cloudnative-pg/postgresql:17
+  # Used only when cnpg.enabled=false: secret with key "uri"
+  existingUriSecret: ""
+
+backup:
+  enabled: true
+  image: ghcr.io/g1ukz/family-budget-backup:latest
+  schedule: "15 3 * * *"
+  # weekly: restore latest snapshot into a scratch database and check it
+  restoreCheckSchedule: "45 4 * * 0"
+  keep: "--keep-daily 7 --keep-weekly 5 --keep-monthly 12"
+  secretName: family-budget-backup
+
+metrics:
+  serviceMonitor: true
+
+networkPolicy:
+  enabled: true
+  ingressNamespace: kube-system   # traefik in k3s
+  monitoringNamespace: monitoring

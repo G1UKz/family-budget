@@ -1,0 +1,31 @@
+# Local development: Postgres + API (+ built SPA). `docker compose up --build`
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: budget
+      POSTGRES_PASSWORD: budget
+      POSTGRES_DB: budget
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U budget"]
+      interval: 3s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      db: {condition: service_healthy}
+    environment:
+      BUDGET_DATABASE_URL: postgresql+psycopg://budget:budget@db:5432/budget
+      BUDGET_SECRET_KEY: dev-only-secret
+      BUDGET_HOME_CITY_REGEX: ${BUDGET_HOME_CITY_REGEX:-(?i)hometown}
+    env_file:
+      - path: .env
+        required: false
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    ports: ["127.0.0.1:8000:8000"]
+
+volumes:
+  pgdata:

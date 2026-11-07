@@ -1,0 +1,87 @@
+# Runbook
+
+## 0. Что нужно заранее
+
+- VDS: 4 vCPU / 8 ГБ RAM / 80 ГБ NVMe, Ubuntu 24.04, доступ root по SSH-ключу.
+- Домен/поддомен с A-записью на IP сервера (для Let's Encrypt).
+- S3-совместимое хранилище **вне** VDS для restic (например, Yandex Object Storage / Backblaze B2): бакет + ключи.
+- Ключ Anthropic API (необязательно).
+- Менеджер паролей для unseal-ключей Vault и пароля restic.
+
+## 1. Подготовка сервера (Ansible)
+
+```bash
+cd deploy/ansible
+cp inventory.example.ini inventory.ini        # IP, admin_user, ssh-ключ, admin_cidrs
+ansible-galaxy collection install -r requirements.yml
+ansible-playbook site.yml -e ansible_user=root    # первый запуск
+ansible-playbook site.yml                         # дальше от admin_user
+```
+
+Плейбук: обновления + unattended-upgrades, пользователь с ключом, SSH без паролей и root, fail2ban, ufw (наружу только 80/443, SSH и 6443 — с `admin_cidrs`), k3s с шифрованием секретов в etcd, Argo CD через k3s HelmChart и root-приложение. Kubeconfig сохраняется в `deploy/ansible/kubeconfig-<host>` (git-ignored): заменить `127.0.0.1` на IP сервера.
+
+```bash
+export KUBECONFIG=$PWD/kubeconfig-budget-1
+kubectl -n argocd get applications            # root → платформа → family-budget
+```
+
+## 2. Vault
+
+Vault поднимается запечатанным. После того как Application `vault` стал Healthy/Progressing:
+
+```bash
+deploy/vault/bootstrap.sh
+```
+
+Скрипт: init (5 ключей, порог 3) → unseal → KV v2 `kv/` → Kubernetes auth → политики и роли для External Secrets и снапшотов → секреты `kv/family-budget/app` (случайный `secret_key`, ключ Anthropic, регэксп домашнего города `home_city_regex`) и `kv/family-budget/backup` (restic-репозиторий, сгенерированный пароль, S3-ключи). Unseal-ключи, root-токен и пароль restic — сразу в менеджер паролей, `vault-init.json` удалить (`shred -u`).
+
+После перезагрузки узла/пода Vault снова запечатан → ESO не обновляет секреты (уже созданные k8s Secrets продолжают работать): `deploy/vault/unseal.sh`.
+
+## 3. Приложение
+
+В `deploy/helm/family-budget/values-prod.yaml` указать домен, в `deploy/platform/cluster-issuer.yaml` — email. Пуш в `main` → CI собирает образы, коммитит тег → Argo CD синхронизирует.
+
+```bash
+kubectl -n budget exec -it deploy/family-budget -- budget create-user ivan --display-name Иван
+kubectl -n budget exec -it deploy/family-budget -- budget create-user partner --display-name Партнёр
+```
+
+Перенос данных: правила и выписки загружаются через UI или `kubectl cp` + `budget import-rules` / `budget import` / `budget migrate-journal` (см. README).
+
+## 4. Бэкапы
+
+| Что | Как | Когда |
+|---|---|---|
+| Postgres | `pg_dump -Fc` → restic (тег `<release>`), retention 7d/5w/12m, `restic check` 5% | ежедневно 03:15 |
+| Проверка восстановления | restic restore latest → временный Postgres в поде → `pg_restore` → проверки (есть операции, импорты) | воскресенье 04:45 |
+| Vault | `vault operator raft snapshot` → restic (тег `vault`) | ежедневно 03:30 |
+
+Алерты: `BudgetBackupFailed`, `BudgetBackupMissing` (>36 ч без успешного бэкапа).
+
+Ручной запуск: `kubectl -n budget create job --from=cronjob/family-budget-backup manual-$(date +%s)`.
+
+### Восстановление БД
+
+```bash
+export RESTIC_REPOSITORY=... RESTIC_PASSWORD=... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+restic snapshots --tag family-budget
+restic restore latest --tag family-budget --target ./restore
+kubectl -n budget scale deploy/family-budget --replicas=0
+kubectl -n budget cp ./restore/work/budget.dump family-budget-db-1:/var/lib/postgresql/data/budget.dump
+kubectl -n budget exec family-budget-db-1 -- pg_restore --clean --if-exists --no-owner -d budget /var/lib/postgresql/data/budget.dump
+kubectl -n budget scale deploy/family-budget --replicas=1
+```
+
+### Полная потеря сервера
+
+1. Новый VDS → шаг 1 (Ansible). Argo CD сам поднимет всё из Git.
+2. Vault: init не делать; восстановить снапшот: `restic restore latest --tag vault`, затем `vault operator raft snapshot restore -force vault.snap` и unseal **старыми** ключами.
+3. ESO создаст секреты → приложение стартует на пустой БД → восстановить БД (выше).
+
+## 5. Мониторинг
+
+`kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80`. Метрики приложения — `/metrics` (http_requests_total, латентность), CNPG PodMonitor, kube-state-metrics для CronJob'ов. Argo CD UI: `kubectl -n argocd port-forward svc/argo-cd-argocd-server 8080:80`.
+
+## 6. Рост до нескольких узлов
+
+Добавить хосты в `[k3s_agents]` → `ansible-playbook site.yml`. Затем `postgres.cnpg.instances: 2` (реплика на другом узле), для HA control plane — 3 сервера с `cluster-init` и Vault `ha.replicas: 3`. Хранилище `local-path` привязано к узлу: для переносимых томов — Longhorn.

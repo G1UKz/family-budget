@@ -1,0 +1,11 @@
+write-kubeconfig-mode: "0600"
+tls-san:
+  - {{ ansible_host }}
+secrets-encryption: true
+protect-kernel-defaults: false
+kube-apiserver-arg:
+  - "anonymous-auth=false"
+kubelet-arg:
+  - "max-pods=110"
+  - "system-reserved=cpu=200m,memory=300Mi"
+  - "eviction-hard=memory.available<200Mi"

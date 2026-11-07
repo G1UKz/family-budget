@@ -1,0 +1,54 @@
+# Daily Vault raft snapshot -> restic (same off-site repo as the DB backups, separate tag).
+# Without it secrets are lost with the server: they are not stored in Git.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: vault-snapshot, namespace: vault}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata: {name: vault-snapshot-restic, namespace: vault}
+spec:
+  secretStoreRef: {kind: ClusterSecretStore, name: vault}
+  target: {name: vault-snapshot-restic}
+  data:
+    - {secretKey: RESTIC_REPOSITORY, remoteRef: {key: family-budget/backup, property: restic_repository}}
+    - {secretKey: RESTIC_PASSWORD, remoteRef: {key: family-budget/backup, property: restic_password}}
+    - {secretKey: AWS_ACCESS_KEY_ID, remoteRef: {key: family-budget/backup, property: aws_access_key_id}}
+    - {secretKey: AWS_SECRET_ACCESS_KEY, remoteRef: {key: family-budget/backup, property: aws_secret_access_key}}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: vault-snapshot, namespace: vault}
+spec:
+  schedule: "30 3 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: vault-snapshot
+          restartPolicy: Never
+          securityContext: {runAsUser: 100, runAsGroup: 1000, fsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
+          volumes: [{name: work, emptyDir: {}}]
+          initContainers:
+            - name: snapshot
+              image: hashicorp/vault:2.0.4
+              env: [{name: VAULT_ADDR, value: http://vault-active.vault.svc:8200}]
+              command: [sh, -ec]
+              args:
+                - |
+                  JWT=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                  export VAULT_TOKEN=$(vault write -field=token auth/kubernetes/login role=vault-snapshot jwt="$JWT")
+                  vault operator raft snapshot save /work/vault.snap
+              volumeMounts: [{name: work, mountPath: /work}]
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          containers:
+            - name: upload
+              image: restic/restic:0.18.1
+              command: [sh, -ec]
+              args: ["restic cat config >/dev/null 2>&1 || restic init; restic backup --tag vault --host k8s /work/vault.snap; restic forget --tag vault --prune --keep-daily 7 --keep-monthly 6"]
+              env: [{name: RESTIC_CACHE_DIR, value: /work/cache}]
+              envFrom: [{secretRef: {name: vault-snapshot-restic}}]
+              volumeMounts: [{name: work, mountPath: /work}]
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}

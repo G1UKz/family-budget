@@ -1,0 +1,31 @@
+# Python / Node
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+node_modules/
+frontend/dist/
+
+# Secrets and private data: never commit
+.env
+.env.*
+!.env.example
+*.age
+!*.sops.*
+private/
+data/
+.local-dev-credentials
+*.dump
+*.sql.gz
+
+# Real statements and legacy journal/rules (only synthetic fixtures are allowed)
+*.pdf
+!backend/tests/fixtures/vtb_synthetic.pdf
+journal.csv
+rules.csv
+overrides.csv
+trips.csv
+kubeconfig*
+*.tsbuildinfo

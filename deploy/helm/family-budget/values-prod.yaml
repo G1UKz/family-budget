@@ -1,0 +1,7 @@
+# Production overrides. Image tags are bumped by CI on every merge to main (GitOps).
+image:
+  tag: latest
+backup:
+  image: ghcr.io/g1ukz/family-budget-backup:latest
+ingress:
+  host: budget.example.com   # TODO: real domain, A-record -> VDS IP

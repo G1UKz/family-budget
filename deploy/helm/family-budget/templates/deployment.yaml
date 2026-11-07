@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fb.name" . }}
+  labels: {{- include "fb.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 0, maxSurge: 1}}
+  selector:
+    matchLabels: {{- include "fb.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "fb.selector" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      initContainers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["alembic", "upgrade", "head"]
+          env: {{- include "fb.env" . | nindent 12 }}
+          securityContext: {{- include "fb.securityContext" . | nindent 12 }}
+          resources: {{- toYaml .Values.app.resources | nindent 12 }}
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports: [{name: http, containerPort: 8000}]
+          env: {{- include "fb.env" . | nindent 12 }}
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 10}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20, failureThreshold: 3}
+          startupProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 2, failureThreshold: 30}
+          securityContext: {{- include "fb.securityContext" . | nindent 12 }}
+          resources: {{- toYaml .Values.app.resources | nindent 12 }}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fb.name" . }}
+  labels: {{- include "fb.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "fb.selector" . | nindent 4 }}
+  ports: [{name: http, port: 80, targetPort: http}]

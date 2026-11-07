@@ -1,0 +1,35 @@
+{{- if .Values.metrics.serviceMonitor }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "fb.name" . }}
+  labels: {{- include "fb.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {{- include "fb.selector" . | nindent 6 }}
+  endpoints: [{port: http, path: /metrics, interval: 30s}]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "fb.name" . }}
+  labels: {{- include "fb.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: family-budget
+      rules:
+        - alert: BudgetBackupFailed
+          expr: kube_job_status_failed{namespace="{{ .Release.Namespace }}", job_name=~"{{ include "fb.name" . }}-(backup|restore-check).*"} > 0
+          for: 5m
+          labels: {severity: critical}
+          annotations: {summary: "Backup or restore check job failed"}
+        - alert: BudgetBackupMissing
+          expr: time() - max(kube_cronjob_status_last_successful_time{namespace="{{ .Release.Namespace }}", cronjob="{{ include "fb.name" . }}-backup"}) > 36 * 3600
+          labels: {severity: critical}
+          annotations: {summary: "No successful backup for 36h"}
+        - alert: BudgetHighErrorRate
+          expr: sum(rate(http_requests_total{namespace="{{ .Release.Namespace }}", status=~"5.."}[10m])) > 0.05
+          for: 10m
+          labels: {severity: warning}
+          annotations: {summary: "Family budget returns 5xx"}
+{{- end }}
