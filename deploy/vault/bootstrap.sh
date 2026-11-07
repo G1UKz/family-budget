@@ -7,9 +7,13 @@
 set -euo pipefail
 NS=vault
 POD=vault-0
-v() { kubectl -n "$NS" exec -i "$POD" -- env VAULT_ADDR=http://127.0.0.1:8200 ${VAULT_TOKEN:+VAULT_TOKEN=$VAULT_TOKEN} vault "$@"; }
+# v: no stdin (so it never swallows the script's input); vin: stdin passed through (policies via heredoc)
+v() { kubectl -n "$NS" exec "$POD" -- env VAULT_ADDR=http://127.0.0.1:8200 ${VAULT_TOKEN:+VAULT_TOKEN=$VAULT_TOKEN} vault "$@" </dev/null; }
+vin() { kubectl -n "$NS" exec -i "$POD" -- env VAULT_ADDR=http://127.0.0.1:8200 ${VAULT_TOKEN:+VAULT_TOKEN=$VAULT_TOKEN} vault "$@"; }
 
-if v status -format=json | grep -q '"initialized": false'; then
+# `vault status` exits 2 while sealed: capture the JSON regardless of the exit code
+STATUS=$(v status -format=json || true)
+if grep -q '"initialized": false' <<<"$STATUS"; then
   umask 077
   v operator init -key-shares=5 -key-threshold=3 -format=json > vault-init.json
   echo ">>> vault-init.json written: move unseal keys + root token to a password manager, then: shred -u vault-init.json"
@@ -20,15 +24,16 @@ else
 fi
 export VAULT_TOKEN
 
-v secrets list | grep -q '^kv/' || v secrets enable -path=kv kv-v2
-v auth list | grep -q '^kubernetes/' || v auth enable kubernetes
+# capture first: `grep -q` + pipefail would turn an early exit (SIGPIPE) into a false negative
+grep -q '^kv/' <<<"$(v secrets list)" || v secrets enable -path=kv kv-v2
+grep -q '^kubernetes/' <<<"$(v auth list)" || v auth enable kubernetes
 v write auth/kubernetes/config kubernetes_host=https://kubernetes.default.svc
 
-v policy write external-secrets - <<'POL'
+vin policy write external-secrets - <<'POL'
 path "kv/data/family-budget/*" { capabilities = ["read"] }
 path "kv/metadata/family-budget/*" { capabilities = ["read", "list"] }
 POL
-v policy write vault-snapshot - <<'POL'
+vin policy write vault-snapshot - <<'POL'
 path "sys/storage/raft/snapshot" { capabilities = ["read"] }
 POL
 v write auth/kubernetes/role/external-secrets bound_service_account_names=external-secrets \

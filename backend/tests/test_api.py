@@ -88,3 +88,4 @@ def test_health():
     assert c.get("/healthz").json() == {"ok": True}
     assert c.get("/readyz").status_code == 200
     assert c.get("/metrics").status_code == 200
+    assert c.get("/metrics", headers={"X-Forwarded-For": "203.0.113.5"}).status_code == 404

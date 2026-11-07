@@ -1,8 +1,8 @@
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
@@ -44,6 +44,14 @@ def create_app() -> FastAPI:
     Instrumentator(excluded_handlers=["/healthz", "/readyz", "/metrics"]).instrument(app).expose(
         app, include_in_schema=False
     )
+
+    @app.middleware("http")
+    async def internal_only_metrics(request: Request, call_next):
+        # /metrics is for in-cluster scraping only. Requests through the ingress (Traefik) always
+        # carry X-Forwarded-For, direct pod/service scrapes do not.
+        if request.url.path == "/metrics" and "x-forwarded-for" in request.headers:
+            return PlainTextResponse("Not Found", status_code=404)
+        return await call_next(request)
 
     # Built SPA (frontend/dist copied into the image as ./static)
     static = Path(s.static_dir).resolve()
