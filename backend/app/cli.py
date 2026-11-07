@@ -313,7 +313,7 @@ def cmd_set(a):
                 tx,
                 a.type,
                 a.category,
-                f"cli:{a.by}",
+                f"user:{a.by}:cli",
                 note=a.note,
                 make_rule=a.rule is not None,
                 rule_pattern=a.rule or None,
@@ -391,7 +391,7 @@ def main(argv=None):
     s.add_argument("category")
     s.add_argument("--note")
     s.add_argument("--rule", nargs="?", const="", help="also create a rule (optional regex)")
-    s.add_argument("--by", default="claude", help="who decided, stored as cli:<by>")
+    s.add_argument("--by", default="ivan", help="whose decision; stored as user:<by>:cli and kept by rule re-runs")
     s.set_defaults(fn=cmd_set)
     s = sub.add_parser("suggest", help="AI suggestions for the review queue")
     s.add_argument("--limit", type=int, default=20)

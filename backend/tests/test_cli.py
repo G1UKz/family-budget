@@ -17,7 +17,7 @@ def test_cli_import_review_set_report(capsys):
     assert review, "synthetic statement has an unmatched operation"
     t = review[0]
     out = json.loads(_run(capsys, "set", str(t["id"]), "expense", "Продукты", "--note", "test", "--rule"))
-    assert out["status"] == "confirmed" and out["decided_by"] == "cli:claude"
+    assert out["status"] == "confirmed" and out["decided_by"] == "user:ivan:cli"
     assert all(r["id"] != t["id"] for r in json.loads(_run(capsys, "review")))
     months = json.loads(_run(capsys, "report", "months"))
     assert months and "expense" in months[0]
@@ -33,3 +33,16 @@ def test_cli_set_rejects_unknown_category(capsys):
         assert "unknown category" in str(e)
     else:
         raise AssertionError("expected exit")
+
+
+def test_cli_decision_survives_rule_rerun(capsys):
+    from app.services.categorize import recategorize
+    from tests.conftest import session_factory
+
+    _run(capsys, "import", str(FIXTURES / "vtb_synthetic.pdf"))
+    t = json.loads(_run(capsys, "review"))[0]
+    _run(capsys, "set", str(t["id"]), "expense", "Переводы людям")
+    with session_factory()() as db:
+        recategorize(db)
+    after = json.loads(_run(capsys, "tx", "--all"))
+    assert next(r for r in after if r["id"] == t["id"])["category"] == "Переводы людям"
