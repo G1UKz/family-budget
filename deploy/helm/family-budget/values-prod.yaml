@@ -5,7 +5,7 @@ backup:
   enabled: false   # true once the S3 bucket and kv/family-budget/backup exist (docs/operations.md)
   image: ghcr.io/g1ukz/family-budget-backup:sha-b6e2ad5
 ingress:
-  host: budget.example.com   # TODO: real domain, A-record -> VDS IP
+  host: budget.91.84.104.37.sslip.io   # temporary: sslip.io resolves to the VDS IP; replace with own domain
 
 # Home-use profile (4 GB node). Production switches, see docs/operations.md:
 metrics:
