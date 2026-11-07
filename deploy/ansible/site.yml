@@ -63,6 +63,14 @@
         - {k: net.ipv4.ip_forward, v: "1"}
         - {k: fs.inotify.max_user_instances, v: "512"}
         - {k: vm.swappiness, v: "10"}
+    - name: Swap file (safety net for system processes on small nodes; pods do not use swap by default)
+      ansible.builtin.command: >-
+        sh -c 'fallocate -l {{ swap_size | default("2G") }} /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile'
+      args: {creates: /swapfile}
+      when: (swap_size | default("2G")) != "0"
+    - name: Swap in fstab
+      ansible.posix.mount: {src: /swapfile, path: none, fstype: swap, opts: sw, state: present}
+      when: (swap_size | default("2G")) != "0"
     - name: Firewall defaults
       community.general.ufw: {state: enabled, policy: deny, direction: incoming}
     - name: Public HTTP(S)
