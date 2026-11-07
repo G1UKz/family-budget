@@ -14,16 +14,24 @@
 cd deploy/ansible
 cp inventory.example.ini inventory.ini        # IP, admin_user, ssh-ключ, admin_cidrs
 ansible-galaxy collection install -r requirements.yml
-ansible-playbook site.yml -e ansible_user=root    # первый запуск
-ansible-playbook site.yml                         # дальше от admin_user
+ansible-playbook site.yml --check --diff        # сначала сухой прогон
+ansible-playbook site.yml                         # первый запуск: ansible_user=root в инвентаре
 ```
 
-Плейбук: обновления + unattended-upgrades, пользователь с ключом, SSH без паролей и root, fail2ban, ufw (наружу только 80/443, SSH и 6443 — с `admin_cidrs`), k3s с шифрованием секретов в etcd, Argo CD через k3s HelmChart и root-приложение. Kubeconfig сохраняется в `deploy/ansible/kubeconfig-<host>` (git-ignored): заменить `127.0.0.1` на IP сервера.
+Первый play подключается под root и запрещает вход под root; следующие play'и подключаются под `admin_user`. Для повторных запусков поставить в инвентаре `ansible_user=<admin_user>`. Проверено на Ubuntu 24.04 (ssh через socket activation: плейбук создаёт `/run/sshd` для `sshd -t`).
+
+Плейбук: обновления + unattended-upgrades, пользователь с ключом, SSH без паролей и root, fail2ban, ufw (наружу только 80/443, SSH и 6443 — с `admin_cidrs`), k3s с шифрованием секретов в etcd, Argo CD через k3s HelmChart и root-приложение. Kubeconfig сохраняется в `deploy/ansible/kubeconfig-<host>` (git-ignored). Подключить к kubie (контекст `family-budget`) и удалить исходник:
 
 ```bash
-export KUBECONFIG=$PWD/kubeconfig-budget-1
+umask 077
+sed -e 's/127\.0\.0\.1/<IP>/' -e 's/: default$/: family-budget/' -e 's/^- name: default$/- name: family-budget/' \
+    -e 's/^  name: default$/  name: family-budget/' kubeconfig-budget-1 > ~/.kube/kubie/family-budget.yaml
+rm -P kubeconfig-budget-1
+kubie ctx family-budget
 kubectl -n argocd get applications            # root → платформа → family-budget
 ```
+
+Это admin-сертификат k3s (cluster-admin): хранить только на своей машине.
 
 ## 2. Vault
 
@@ -33,13 +41,15 @@ Vault поднимается запечатанным. После того ка�
 deploy/vault/bootstrap.sh
 ```
 
-Скрипт: init (5 ключей, порог 3) → unseal → KV v2 `kv/` → Kubernetes auth → политики и роли для External Secrets и снапшотов → секреты `kv/family-budget/app` (случайный `secret_key`, ключ Anthropic, регэксп домашнего города `home_city_regex`) и `kv/family-budget/backup` (restic-репозиторий, сгенерированный пароль, S3-ключи). Unseal-ключи, root-токен и пароль restic — сразу в менеджер паролей, `vault-init.json` удалить (`shred -u`).
+Скрипт идемпотентен (можно перезапускать: попросит токен с правами администратора). Шаги: init (5 ключей, порог 3) → unseal → KV v2 `kv/` → Kubernetes auth → политики и роли для External Secrets и снапшотов → секреты `kv/family-budget/app` (случайный `secret_key`, ключ Anthropic, регэксп домашнего города `home_city_regex`) и `kv/family-budget/backup` (restic-репозиторий, сгенерированный пароль, S3-ключи). Unseal-ключи, root-токен и пароль restic — сразу в менеджер паролей, `vault-init.json` удалить (`shred -u`).
 
 После перезагрузки узла/пода Vault снова запечатан → ESO не обновляет секреты (уже созданные k8s Secrets продолжают работать): `deploy/vault/unseal.sh`.
 
+Если ExternalSecret успел упасть до bootstrap'а (`SecretSyncedError`), подтолкнуть: `kubectl -n budget annotate externalsecret family-budget force-sync=$(date +%s) --overwrite`.
+
 ## 3. Приложение
 
-В `deploy/helm/family-budget/values-prod.yaml` указать домен, в `deploy/platform/cluster-issuer.yaml` — email. Пуш в `main` → CI собирает образы, коммитит тег → Argo CD синхронизирует.
+В `deploy/helm/family-budget/values-prod.yaml` указать домен. Без своего домена подходит `budget.<IP>.sslip.io` (резолвится в IP, Let's Encrypt выдаёт сертификат). Email в `deploy/platform/cluster-issuer.yaml` необязателен (уведомления об истечении; cert-manager продлевает сам). Пуш в `main` → CI собирает образы, коммитит тег → Argo CD синхронизирует.
 
 ```bash
 kubectl -n budget exec -it deploy/family-budget -- budget create-user ivan --display-name Иван
@@ -47,6 +57,21 @@ kubectl -n budget exec -it deploy/family-budget -- budget create-user partner --
 ```
 
 Перенос данных: правила и выписки загружаются через UI или `kubectl cp` + `budget import-rules` / `budget import` / `budget migrate-journal` (см. README).
+
+### Перенос готовой базы (например, из локального docker compose)
+
+```bash
+docker compose exec -T db pg_dump -U budget -d budget -Fc --no-owner --no-acl > private/budget.dump
+kubectl -n argocd patch application family-budget --type merge -p '{"spec":{"syncPolicy":{"automated":null}}}'
+kubectl -n budget scale deploy/family-budget --replicas=0
+kubectl -n budget exec -i family-budget-db-1 -c postgres -- \
+  pg_restore -d budget --clean --if-exists --no-owner --no-acl --role=budget < private/budget.dump
+# сверить: одинаковые count(*) и sum(amount) по type на обеих сторонах
+kubectl -n argocd patch application family-budget --type merge \
+  -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'   # Argo вернёт replicas=1
+```
+
+Пользователи и их TOTP переезжают вместе с базой.
 
 ## 4. Бэкапы
 
