@@ -106,7 +106,7 @@ jobs:
           push: ${{ github.event_name == 'push' }}
           tags: ghcr.io/g1ukz/family-budget-backup:${{ steps.meta.outputs.tag }},ghcr.io/g1ukz/family-budget-backup:latest
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ghcr.io/g1ukz/family-budget:${{ steps.meta.outputs.tag }}
           severity: CRITICAL
