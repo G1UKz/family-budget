@@ -20,7 +20,7 @@ ansible-playbook site.yml                         # первый запуск: a
 
 Первый play подключается под root и запрещает вход под root; следующие play'и подключаются под `admin_user`. Для повторных запусков поставить в инвентаре `ansible_user=<admin_user>`. Проверено на Ubuntu 24.04 (ssh через socket activation: плейбук создаёт `/run/sshd` для `sshd -t`).
 
-Плейбук: обновления + unattended-upgrades, пользователь с ключом, SSH без паролей и root, fail2ban, ufw (наружу только 80/443, SSH и 6443 — с `admin_cidrs`), k3s с шифрованием секретов в etcd, Argo CD через k3s HelmChart и root-приложение. Kubeconfig сохраняется в `deploy/ansible/kubeconfig-<host>` (git-ignored). Подключить к kubie (контекст `family-budget`) и удалить исходник:
+Плейбук: обновления + unattended-upgrades, пользователь с ключом, SSH без паролей и root, fail2ban, ufw (наружу только 80/443, SSH и 6443 — только с `admin_cidrs`), k3s с шифрованием секретов в etcd, Argo CD через k3s HelmChart и root-приложение. Kubeconfig сохраняется в `deploy/ansible/kubeconfig-<host>` (git-ignored). Подключить к kubie (контекст `family-budget`) и удалить исходник:
 
 ```bash
 umask 077
@@ -32,6 +32,20 @@ kubectl -n argocd get applications            # root → платформа → 
 ```
 
 Это admin-сертификат k3s (cluster-admin): хранить только на своей машине.
+
+**Доступ только через бастион.** Когда SSH и 6443 не должны торчать в интернет, в инвентаре:
+`admin_cidrs=["<IP бастиона>/32"]` и `ansible_ssh_common_args="-o ProxyJump=<бастион>"`, затем
+`ansible-playbook site.yml` — добавит правила для бастиона и удалит открытые (`0.0.0.0/0`).
+На своей машине:
+
+```bash
+# ~/.ssh/config: Host budget-k3s → HostName <IP>, ProxyJump <бастион>
+ssh -fN -o ExitOnForwardFailure=yes -L 127.0.0.1:16443:<IP>:6443 <бастион>   # туннель к API
+sed -i '' 's|server: https://<IP>:6443|server: https://127.0.0.1:16443|' ~/.kube/kubie/family-budget.yaml
+kubie ctx family-budget      # сертификат k3s уже содержит 127.0.0.1 в SAN
+```
+
+Новые агенты (`k3s_agents`) ходят к серверу на 6443 — их IP тоже добавить в `admin_cidrs`.
 
 ## 2. Vault
 

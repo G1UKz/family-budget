@@ -79,6 +79,10 @@
     - name: SSH and kube API from admin networks
       community.general.ufw: {rule: allow, port: "{{ item.1 }}", proto: tcp, src: "{{ item.0 }}"}
       loop: "{{ admin_cidrs | product([ssh_port | string, '6443']) | list }}"
+    - name: Drop world-open SSH / kube API once admin_cidrs is narrowed
+      community.general.ufw: {rule: allow, port: "{{ item }}", proto: tcp, delete: true}
+      loop: ["{{ ssh_port | string }}", "6443"]
+      when: "'0.0.0.0/0' not in admin_cidrs"
     - name: Pod and service networks
       community.general.ufw: {rule: allow, src: "{{ item }}"}
       loop: ["10.42.0.0/16", "10.43.0.0/16"]
