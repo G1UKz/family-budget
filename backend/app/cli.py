@@ -335,6 +335,41 @@ def cmd_suggest(a):
         print(f"suggestions created: {suggest_pending(db, s, a.limit)}")
 
 
+def cmd_trip(a):
+    """Trips: purchases of the listed categories outside the home city on these dates -> "Поездки"."""
+    from app.services.categorize import recategorize
+
+    with session_factory()() as db:
+        if a.action == "list":
+            _json(
+                [
+                    {"id": t.id, "name": t.name, "start": t.start, "end": t.end, "categories": t.categories.split(";")}
+                    for t in db.scalars(select(Trip).order_by(Trip.start))
+                ]
+            )
+            return
+        if a.action == "add":
+            if not (a.name and a.start and a.end and a.categories):
+                sys.exit("usage: budget trip add NAME START END 'Кат1;Кат2'")
+            start, end = date.fromisoformat(a.start), date.fromisoformat(a.end)
+            if end < start:
+                sys.exit("end is before start")
+            known = {c.name for c in db.scalars(select(Category))}
+            cats = [c.strip() for c in a.categories.split(";") if c.strip()]
+            if unknown := [c for c in cats if c not in known]:
+                sys.exit(f"unknown categories: {unknown}")
+            _ensure_category(db, "Поездки", "expense")
+            db.add(Trip(name=a.name, start=start, end=end, categories=";".join(cats)))
+        elif a.action == "rm":
+            t = db.get(Trip, int(a.name or 0))
+            if t is None:
+                sys.exit("usage: budget trip rm ID")
+            db.delete(t)
+        db.commit()
+        # re-run rules so the trip applies (or stops applying); manual decisions are kept
+        print(f"recategorized: {recategorize(db)}")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="budget")
     sub = p.add_subparsers(required=True)
@@ -396,6 +431,13 @@ def main(argv=None):
     s = sub.add_parser("suggest", help="AI suggestions for the review queue")
     s.add_argument("--limit", type=int, default=20)
     s.set_defaults(fn=cmd_suggest)
+    s = sub.add_parser("trip", help="trips: list | add NAME START END 'Кат1;Кат2' | rm ID")
+    s.add_argument("action", choices=["list", "add", "rm"])
+    s.add_argument("name", nargs="?")
+    s.add_argument("start", nargs="?")
+    s.add_argument("end", nargs="?")
+    s.add_argument("categories", nargs="?")
+    s.set_defaults(fn=cmd_trip)
     a = p.parse_args(argv)
     a.fn(a)
 

@@ -46,3 +46,27 @@ def test_cli_decision_survives_rule_rerun(capsys):
         recategorize(db)
     after = json.loads(_run(capsys, "tx", "--all"))
     assert next(r for r in after if r["id"] == t["id"])["category"] == "Переводы людям"
+
+
+def test_cli_trip_moves_purchases_to_trips(capsys):
+    _run(capsys, "import", str(FIXTURES / "vtb_synthetic.pdf"))
+    food = [r for r in json.loads(_run(capsys, "tx")) if r["category"] == "Продукты"]
+    assert food
+    d = food[0]["date"]
+    _run(capsys, "trip", "add", "Тестовая поездка", d, d, "Продукты")
+    assert json.loads(_run(capsys, "trip", "list"))[0]["name"] == "Тестовая поездка"
+    moved = next(r for r in json.loads(_run(capsys, "tx")) if r["id"] == food[0]["id"])
+    assert moved["category"] == "Поездки" and "Тестовая поездка" in moved["note"]
+    tid = json.loads(_run(capsys, "trip", "list"))[0]["id"]
+    _run(capsys, "trip", "rm", str(tid))
+    back = next(r for r in json.loads(_run(capsys, "tx")) if r["id"] == food[0]["id"])
+    assert back["category"] == "Продукты"
+
+
+def test_cli_trip_rejects_unknown_category(capsys):
+    try:
+        cli.main(["trip", "add", "X", "2026-07-01", "2026-07-02", "Нет такой"])
+    except SystemExit as e:
+        assert "unknown categories" in str(e)
+    else:
+        raise AssertionError("expected exit")

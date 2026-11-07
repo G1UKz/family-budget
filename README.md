@@ -51,7 +51,7 @@ deploy/platform/  ClusterIssuer, ClusterSecretStore, снапшоты Vault
 deploy/vault/     bootstrap.sh / unseal.sh
 deploy/ansible/   подготовка VDS и установка k3s + Argo CD
 deploy/backup/    образ pg_dump + restic, скрипт бэкапа и проверки восстановления
-docs/             runbook
+docs/             runbook (operations.md), схема БД (database.md)
 ```
 
 ### Модель данных
@@ -78,6 +78,15 @@ budget account "ВТБ основной" --bank ВТБ --mask 1234          # с
 budget import-rules rules.csv --overrides overrides.csv --trips trips.csv
 budget import vtb_2026-06-01_2026-10-31.pdf                     # печатает результат сверки
 budget migrate-journal journal.csv --source "ВТБ=ВТБ основной"  # перенос истории
+
+# Для автоматизации (JSON на выходе); в кластере: kubectl -n budget exec deploy/family-budget -- budget ...
+budget report months|categories --month 2026-10|balances|summary
+budget imports --last 5                                        # импорты и их сверка
+budget tx --since 2026-10-01 -q СБП                            # операции
+budget review                                                  # очередь разбора + подсказки ИИ
+budget set 123 expense "Продукты" --note "..." --rule          # решение по операции (+ правило)
+budget trip add "Казань" 2026-08-01 2026-08-05 "Кафе и рестораны;Продукты"   # поездка, правила перегоняются
+budget suggest --limit 20                                      # подсказки ИИ (нужен ключ Anthropic)
 ```
 
 ## Перенос истории из journal.csv
@@ -101,6 +110,8 @@ budget migrate-journal journal.csv --source "ВТБ=ВТБ основной"  # 
 ## Развёртывание на VDS
 
 Текущее состояние: один узел k3s на VDS (2 vCPU / 4 ГБ, профиль «для дома»: полный мониторинг и бэкапы подготовлены, но выключены до S3), всё поднимает Argo CD из этого репозитория.
+
+Схема базы и как операция получает категорию — [docs/database.md](docs/database.md).
 
 См. [docs/operations.md](docs/operations.md): подготовка сервера Ansible'ом, bootstrap Vault, первый деплой, бэкап и восстановление, распечатка Vault после перезагрузки, рост до нескольких узлов.
 
