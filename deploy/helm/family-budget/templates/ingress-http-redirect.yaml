@@ -1,0 +1,32 @@
+{{- if and .Values.ingress.enabled .Values.ingress.tls .Values.ingress.httpRedirect }}
+# Plain http:// -> https:// for this host only. A per-host router (not a global entrypoint
+# redirect) keeps cert-manager's HTTP-01 solver working: its /.well-known/acme-challenge/<token>
+# rule is longer, so Traefik prefers it over this catch-all.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "fb.name" . }}-https-redirect
+  labels: {{- include "fb.labels" . | nindent 4 }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "fb.name" . }}-http
+  labels: {{- include "fb.labels" . | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-{{ include "fb.name" . }}-https-redirect@kubernetescrd
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: {{ include "fb.name" . }}, port: {name: http}}}
+{{- end }}

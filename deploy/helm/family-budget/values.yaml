@@ -11,6 +11,7 @@ ingress:
   host: budget.example.com
   clusterIssuer: letsencrypt
   tls: true
+  httpRedirect: true   # Traefik: http:// -> https:// (needs the traefik.io Middleware CRD)
 
 app:
   env: prod

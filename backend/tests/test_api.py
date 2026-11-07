@@ -89,3 +89,19 @@ def test_health():
     assert c.get("/readyz").status_code == 200
     assert c.get("/metrics").status_code == 200
     assert c.get("/metrics", headers={"X-Forwarded-For": "203.0.113.5"}).status_code == 404
+
+
+def test_api_docs_only_in_dev(monkeypatch):
+    from app.config import get_settings
+
+    assert TestClient(create_app()).get("/api/openapi.json").status_code == 200
+    monkeypatch.setenv("BUDGET_ENV", "prod")
+    monkeypatch.setenv("BUDGET_SECRET_KEY", "x" * 40)
+    get_settings.cache_clear()
+    try:
+        c = TestClient(create_app())
+        assert c.get("/api/openapi.json").status_code != 200 or "openapi" not in c.get("/api/openapi.json").text
+        assert "swagger" not in c.get("/api/docs").text.lower()
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()

@@ -19,7 +19,15 @@ def create_app() -> FastAPI:
     s = get_settings()
     if s.env != "dev" and (s.secret_key.startswith("dev-") or len(s.secret_key) < 32):
         raise RuntimeError("BUDGET_SECRET_KEY must be set to a random value (>=32 chars) outside dev")
-    app = FastAPI(title="Family Budget", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    # API docs only in dev: in prod the schema would hand out the whole API surface to anyone
+    dev = s.env == "dev"
+    app = FastAPI(
+        title="Family Budget",
+        version="0.1.0",
+        docs_url="/api/docs" if dev else None,
+        redoc_url=None,
+        openapi_url="/api/openapi.json" if dev else None,
+    )
     app.add_middleware(
         SessionMiddleware,
         secret_key=s.secret_key,
