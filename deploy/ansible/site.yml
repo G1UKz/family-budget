@@ -4,11 +4,13 @@
   hosts: all
   become: true
   tasks:
+    - name: Upgrade installed packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: safe
     - name: Packages
       ansible.builtin.apt:
         name: [ufw, fail2ban, unattended-upgrades, curl, ca-certificates, nfs-common, open-iscsi]
-        update_cache: true
-        upgrade: safe
     - name: Unattended security upgrades
       ansible.builtin.copy:
         dest: /etc/apt/apt.conf.d/20auto-upgrades
@@ -21,6 +23,7 @@
     - name: Admin SSH key
       ansible.posix.authorized_key:
         user: "{{ admin_user }}"
+        path: "/home/{{ admin_user }}/.ssh/authorized_keys"   # explicit path: works in --check before the user exists
         key: "{{ lookup('file', admin_pubkey_file) }}"
     - name: Passwordless sudo for admin (key-only login)
       ansible.builtin.copy:
@@ -72,12 +75,16 @@
   handlers:
     - name: Restart ssh
       ansible.builtin.service: {name: ssh, state: restarted}
+      ignore_errors: "{{ ansible_check_mode }}"   # package/unit may not exist yet in --check
     - name: Restart fail2ban
       ansible.builtin.service: {name: fail2ban, state: restarted}
+      ignore_errors: "{{ ansible_check_mode }}"
 
 - name: K3s server
   hosts: k3s_server
   become: true
+  # root login is disabled by the hardening play above: continue as the admin user
+  vars: {ansible_user: "{{ admin_user }}"}
   tasks:
     - name: K3s config
       ansible.builtin.template: {src: templates/k3s-server.yaml.j2, dest: /etc/rancher/k3s/config.yaml, mode: "0600"}
@@ -96,15 +103,19 @@
     - name: Read join token
       ansible.builtin.slurp: {src: /var/lib/rancher/k3s/server/node-token}
       register: k3s_token
+      when: not ansible_check_mode
     - name: Fetch kubeconfig
       ansible.builtin.fetch: {src: /etc/rancher/k3s/k3s.yaml, dest: "./kubeconfig-{{ inventory_hostname }}", flat: true}
+      when: not ansible_check_mode
   handlers:
     - name: Restart k3s
       ansible.builtin.service: {name: k3s, state: restarted}
+      ignore_errors: "{{ ansible_check_mode }}"
 
 - name: K3s agents (future nodes)
   hosts: k3s_agents
   become: true
+  vars: {ansible_user: "{{ admin_user }}"}
   tasks:
     - name: K3s installer
       ansible.builtin.get_url: {url: https://get.k3s.io, dest: /usr/local/bin/k3s-install.sh, mode: "0700"}
