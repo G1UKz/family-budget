@@ -1,5 +1,3 @@
-import re
-
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -7,11 +5,12 @@ from sqlalchemy.orm import Session
 from app.api.schemas import ImportOut, ReviewItem, SuggestionOut, TxDecision, TxOut, TxPage
 from app.config import get_settings
 from app.db import get_db
-from app.models import Category, Import, Rule, Suggestion, Transaction, TxStatus, User
+from app.models import Import, Suggestion, Transaction, TxStatus, User
 from app.parsers.base import StatementError
 from app.security import current_user
 from app.services import importer
-from app.services.categorize import link_counter_account
+from app.services.decide import DecisionError
+from app.services.decide import decide as decide_tx
 from app.services.suggest import get_suggester, suggest_pending
 
 router = APIRouter(prefix="/api", tags=["transactions"])
@@ -59,32 +58,19 @@ def transactions(
 
 
 def _decide(db: Session, tx: Transaction, body: TxDecision, user: User) -> None:
-    valid = {c.name for c in db.scalars(select(Category))}
-    if body.type != "?" and body.category not in valid:
-        raise HTTPException(422, f"unknown category {body.category!r}")
-    tx.type, tx.category = body.type, body.category
-    if body.note is not None:
-        tx.note = body.note
-    tx.status = TxStatus.review if body.type == "?" else TxStatus.confirmed
-    tx.decided_by = f"user:{user.username}"
-    link_counter_account(db, tx)
-    if body.make_rule:
-        pattern = body.rule_pattern or re.escape(tx.merchant or tx.description[:40])
-        try:
-            re.compile(pattern)
-        except re.error as e:
-            raise HTTPException(422, f"bad regex: {e}") from e
-        # new rules go before the generic catch-alls
-        db.add(
-            Rule(
-                priority=100,
-                pattern=pattern,
-                type=body.type,
-                category=body.category,
-                origin="review",
-                note=f"из разбора операции {tx.date}",
-            )
+    try:
+        decide_tx(
+            db,
+            tx,
+            body.type,
+            body.category,
+            f"user:{user.username}",
+            note=body.note,
+            make_rule=body.make_rule,
+            rule_pattern=body.rule_pattern,
         )
+    except DecisionError as e:
+        raise HTTPException(422, str(e)) from e
 
 
 @router.put("/transactions/{tid}", response_model=TxOut)
@@ -93,8 +79,6 @@ def decide(tid: int, body: TxDecision, db: Session = Depends(get_db), user: User
     if not tx:
         raise HTTPException(404)
     _decide(db, tx, body, user)
-    for s in db.scalars(select(Suggestion).where(Suggestion.transaction_id == tid, Suggestion.status == "pending")):
-        s.status = "accepted" if (s.type, s.category) == (body.type, body.category) else "rejected"
     db.commit()
     return tx
 

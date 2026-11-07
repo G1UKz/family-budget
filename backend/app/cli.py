@@ -12,7 +12,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app.db import Base, get_engine, session_factory
-from app.models import Account, Category, Override, Rule, Transaction, Trip, TxStatus, User
+from app.models import Account, Category, Import, Override, Rule, Transaction, Trip, TxStatus, User
 from app.security import hash_password, new_totp_secret, totp_uri
 
 
@@ -181,6 +181,160 @@ def cmd_migrate_journal(a):
             sys.exit(1)
 
 
+def _json(obj):
+    import json
+
+    print(json.dumps(obj, ensure_ascii=False, indent=1, default=str))
+
+
+def _tx(t: Transaction) -> dict:
+    return {
+        "id": t.id,
+        "date": t.date,
+        "processed": t.processed,
+        "amount": t.amount,
+        "account": t.account.name,
+        "description": t.description,
+        "counterparty": t.counterparty,
+        "type": t.type,
+        "category": t.category,
+        "note": t.note,
+        "status": t.status,
+        "decided_by": t.decided_by,
+    }
+
+
+def cmd_report(a):
+    """Read-only reports as JSON (same numbers as the web UI)."""
+    from app.services import reports
+
+    with session_factory()() as db:
+        if a.kind == "categories":
+            _json(reports.categories(db, a.month))
+        else:
+            _json(getattr(reports, a.kind)(db))
+
+
+def cmd_imports(a):
+    with session_factory()() as db:
+        rows = db.scalars(select(Import).order_by(Import.id.desc()).limit(a.last)).all()
+        _json(
+            [
+                {
+                    "id": i.id,
+                    "file": i.filename,
+                    "account": i.account.name,
+                    "period": [i.period_start, i.period_end],
+                    "opening": i.opening_balance,
+                    "closing": i.closing_balance,
+                    "income": [i.parsed_income, i.stated_income],
+                    "expense": [i.parsed_expense, i.stated_expense],
+                    "reconciled": i.reconciled,
+                    "ops": [i.ops_new, i.ops_total],
+                    "created": i.created_at,
+                }
+                for i in rows
+            ]
+        )
+
+
+def cmd_tx(a):
+    """List operations (budget period only unless --all)."""
+    from sqlalchemy import or_
+
+    from app.config import get_settings
+
+    s = select(Transaction)
+    if not a.all:
+        s = s.where(Transaction.date >= get_settings().start_date)
+    if a.since:
+        s = s.where(Transaction.date >= date.fromisoformat(a.since))
+    if a.until:
+        s = s.where(Transaction.date <= date.fromisoformat(a.until))
+    if a.import_id:
+        s = s.where(Transaction.import_id == a.import_id)
+    if a.status:
+        s = s.where(Transaction.status == a.status)
+    if a.type:
+        s = s.where(Transaction.type.in_(a.type.split(",")))
+    if a.category:
+        s = s.where(Transaction.category == a.category)
+    if a.q:
+        like = f"%{a.q}%"
+        s = s.where(or_(Transaction.description.ilike(like), Transaction.counterparty.ilike(like)))
+    with session_factory()() as db:
+        _json([_tx(t) for t in db.scalars(s.order_by(Transaction.date, Transaction.id).limit(a.limit))])
+
+
+def cmd_review(_):
+    """Review queue with pending AI suggestions."""
+    from app.config import get_settings
+    from app.models import Suggestion
+
+    with session_factory()() as db:
+        txs = db.scalars(
+            select(Transaction)
+            .where(Transaction.status == TxStatus.review, Transaction.date >= get_settings().start_date)
+            .order_by(Transaction.date)
+        ).all()
+        sug = {
+            s.transaction_id: s
+            for s in db.scalars(
+                select(Suggestion).where(Suggestion.transaction_id.in_([t.id for t in txs]), Suggestion.status == "pending")
+            )
+        }
+        out = []
+        for t in txs:
+            row = _tx(t)
+            if s := sug.get(t.id):
+                row["suggestion"] = {
+                    "id": s.id,
+                    "type": s.type,
+                    "category": s.category,
+                    "confidence": s.confidence,
+                    "explanation": s.explanation,
+                    "rule_pattern": s.rule_pattern,
+                }
+            out.append(row)
+        _json(out)
+
+
+def cmd_set(a):
+    """Decide one operation: type + category (+ note, + reusable rule)."""
+    from app.services.decide import DecisionError, decide
+
+    with session_factory()() as db:
+        tx = db.get(Transaction, a.id)
+        if tx is None:
+            sys.exit(f"transaction {a.id} not found")
+        try:
+            decide(
+                db,
+                tx,
+                a.type,
+                a.category,
+                f"cli:{a.by}",
+                note=a.note,
+                make_rule=a.rule is not None,
+                rule_pattern=a.rule or None,
+            )
+        except DecisionError as e:
+            sys.exit(str(e))
+        db.commit()
+        _json(_tx(tx))
+
+
+def cmd_suggest(a):
+    """Ask the AI for suggestions on the review queue (needs the Anthropic key)."""
+    from app.services.suggest import get_suggester, suggest_pending
+
+    s = get_suggester()
+    if s is None:
+        sys.exit("AI is not configured (BUDGET_ANTHROPIC_API_KEY)")
+    with session_factory()() as db:
+        print(f"suggestions created: {suggest_pending(db, s, a.limit)}")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="budget")
     sub = p.add_subparsers(required=True)
@@ -212,6 +366,36 @@ def main(argv=None):
     s.add_argument("--source", action="append", required=True, help='journal source=account name, e.g. "ВТБ=Основной"')
     s.add_argument("--since", default="2026-06-01")
     s.set_defaults(fn=cmd_migrate_journal)
+    s = sub.add_parser("report", help="reports as JSON")
+    s.add_argument("kind", choices=["summary", "months", "categories", "balances"])
+    s.add_argument("--month", help="YYYY-MM, for categories")
+    s.set_defaults(fn=cmd_report)
+    s = sub.add_parser("imports", help="recent statement imports as JSON")
+    s.add_argument("--last", type=int, default=10)
+    s.set_defaults(fn=cmd_imports)
+    s = sub.add_parser("tx", help="list operations as JSON")
+    s.add_argument("--since")
+    s.add_argument("--until")
+    s.add_argument("--import-id", type=int)
+    s.add_argument("--status", choices=["review", "confirmed"])
+    s.add_argument("--type", help="comma-separated")
+    s.add_argument("--category")
+    s.add_argument("-q", help="substring of description/counterparty")
+    s.add_argument("--limit", type=int, default=500)
+    s.add_argument("--all", action="store_true", help="include operations before the budget start")
+    s.set_defaults(fn=cmd_tx)
+    sub.add_parser("review", help="review queue as JSON").set_defaults(fn=cmd_review)
+    s = sub.add_parser("set", help="decide an operation")
+    s.add_argument("id", type=int)
+    s.add_argument("type", choices=["expense", "income", "refund", "internal", "savings", "capital", "?"])
+    s.add_argument("category")
+    s.add_argument("--note")
+    s.add_argument("--rule", nargs="?", const="", help="also create a rule (optional regex)")
+    s.add_argument("--by", default="claude", help="who decided, stored as cli:<by>")
+    s.set_defaults(fn=cmd_set)
+    s = sub.add_parser("suggest", help="AI suggestions for the review queue")
+    s.add_argument("--limit", type=int, default=20)
+    s.set_defaults(fn=cmd_suggest)
     a = p.parse_args(argv)
     a.fn(a)
 
